@@ -1,0 +1,158 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.14.0
+  name: rebalancerequests.kore.boring.io
+spec:
+  group: kore.boring.io
+  names:
+    kind: RebalanceRequest
+    listKind: RebalanceRequestList
+    plural: rebalancerequests
+    singular: rebalancerequest
+    shortNames:
+      - rr
+      - rebalance
+  scope: Namespaced
+  versions:
+    - additionalPrinterColumns:
+        - jsonPath: .status.phase
+          name: Phase
+          type: string
+        - jsonPath: .status.podsEvicted
+          name: Evicted
+          type: integer
+        - jsonPath: .status.totalPods
+          name: Total
+          type: integer
+        - jsonPath: .metadata.creationTimestamp
+          name: Age
+          type: date
+      name: v1alpha1
+      schema:
+        openAPIV3Schema:
+          description: RebalanceRequest is the Schema for the rebalancerequests API
+          properties:
+            apiVersion:
+              description: 'APIVersion defines the versioned schema of this representation of an object.'
+              type: string
+            kind:
+              description: 'Kind is a string value representing the REST resource this object represents.'
+              type: string
+            metadata:
+              type: object
+            spec:
+              description: RebalanceRequestSpec defines the desired state of RebalanceRequest
+              properties:
+                batchIntervalSeconds:
+                  default: 30
+                  description: BatchIntervalSeconds is the time to wait between batches.
+                  minimum: 0
+                  format: int32
+                  type: integer
+                batchSize:
+                  default: 5
+                  description: BatchSize is the number of pods to evict per batch.
+                  minimum: 1
+                  format: int32
+                  type: integer
+                dryRun:
+                  default: false
+                  description: DryRun if true, will only log what would be evicted without actually evicting.
+                  type: boolean
+                namespaces:
+                  description: Namespaces to target. Empty means all namespaces.
+                  items:
+                    type: string
+                  type: array
+                selector:
+                  description: Selector specifies which pods to consider for rebalancing.
+                  properties:
+                    matchExpressions:
+                      items:
+                        properties:
+                          key:
+                            type: string
+                          operator:
+                            type: string
+                          values:
+                            items:
+                              type: string
+                            type: array
+                        required:
+                          - key
+                          - operator
+                        type: object
+                      type: array
+                    matchLabels:
+                      additionalProperties:
+                        type: string
+                      type: object
+                  type: object
+                  x-kubernetes-map-type: atomic
+              type: object
+            status:
+              description: RebalanceRequestStatus defines the observed state of RebalanceRequest
+              properties:
+                completionTime:
+                  description: CompletionTime is when the rebalance operation completed.
+                  format: date-time
+                  type: string
+                conditions:
+                  description: Conditions represent the latest available observations.
+                  items:
+                    properties:
+                      lastTransitionTime:
+                        format: date-time
+                        type: string
+                      message:
+                        type: string
+                      observedGeneration:
+                        format: int64
+                        type: integer
+                      reason:
+                        type: string
+                      status:
+                        type: string
+                      type:
+                        type: string
+                    required:
+                      - lastTransitionTime
+                      - message
+                      - reason
+                      - status
+                      - type
+                    type: object
+                  type: array
+                message:
+                  description: Message provides additional information about the current status.
+                  type: string
+                phase:
+                  default: Pending
+                  description: Phase represents the current phase of the rebalance operation.
+                  enum:
+                    - Pending
+                    - Running
+                    - Completed
+                    - Failed
+                  type: string
+                podsEvicted:
+                  description: PodsEvicted is the number of pods that have been evicted.
+                  format: int32
+                  type: integer
+                startTime:
+                  description: StartTime is when the rebalance operation started.
+                  format: date-time
+                  type: string
+                totalPods:
+                  description: TotalPods is the total number of pods that were candidates for eviction.
+                  format: int32
+                  type: integer
+              type: object
+          type: object
+      served: true
+      storage: true
+      subresources:
+        status: {}

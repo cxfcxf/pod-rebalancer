@@ -1,0 +1,64 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pod-rebalancer-manager-role
+rules:
+  # RebalanceRequest permissions
+  - apiGroups:
+      - kore.boring.io
+    resources:
+      - rebalancerequests
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - kore.boring.io
+    resources:
+      - rebalancerequests/finalizers
+    verbs:
+      - update
+  - apiGroups:
+      - kore.boring.io
+    resources:
+      - rebalancerequests/status
+    verbs:
+      - get
+      - patch
+      - update
+  # Core resources permissions
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - pods/eviction
+    verbs:
+      - create
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - namespaces
+    verbs:
+      - get
+      - list
+      - watch

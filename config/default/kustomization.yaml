@@ -1,0 +1,16 @@
+namespace: pod-rebalancer-system
+
+namePrefix: pod-rebalancer-
+
+resources:
+  - ../crd
+  - ../rbac
+  - ../manager
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+images:
+  - name: controller
+    newName: ghcr.io/cxfcxf/pod-rebalancer
+    newTag: latest

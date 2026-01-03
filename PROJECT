@@ -1,0 +1,16 @@
+domain: boring.io
+layout:
+- go.kubebuilder.io/v4
+projectName: pod-rebalancer
+repo: github.com/cxfcxf/pod-rebalancer
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: boring.io
+  group: kore
+  kind: RebalanceRequest
+  path: github.com/cxfcxf/pod-rebalancer/api/v1alpha1
+  version: v1alpha1
+version: "3"

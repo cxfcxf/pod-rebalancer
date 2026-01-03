@@ -1,0 +1,25 @@
+---
+apiVersion: kore.boring.io/v1alpha1
+kind: RebalanceRequest
+metadata:
+  name: sample-rebalance
+  namespace: default
+spec:
+  # Optional: Only rebalance pods with specific labels (in addition to kore.boring.io/rebalance=true)
+  selector:
+    matchLabels:
+      app: my-app
+
+  # Optional: Target specific namespaces (empty means all non-system namespaces)
+  namespaces:
+    - default
+    - production
+
+  # Number of pods to evict per batch
+  batchSize: 5
+
+  # Seconds to wait between batches
+  batchIntervalSeconds: 30
+
+  # Set to true to only log what would be evicted
+  dryRun: false
