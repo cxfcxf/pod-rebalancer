@@ -4,6 +4,18 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// NodeTarget defines the target number of pods for nodes matching a selector.
+// This allows different hardware types to have different pod densities.
+type NodeTarget struct {
+	// NodeSelector selects nodes by labels (e.g., hardware=x, hardware=z)
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// TargetPodsPerNode is the desired number of pods on each node matching this selector.
+	// +kubebuilder:validation:Minimum=0
+	TargetPodsPerNode int32 `json:"targetPodsPerNode"`
+}
+
 // RebalanceRequestSpec defines the desired state of RebalanceRequest
 type RebalanceRequestSpec struct {
 	// Selector specifies which pods to consider for rebalancing.
@@ -14,6 +26,19 @@ type RebalanceRequestSpec struct {
 	// Namespaces to target. Empty means all namespaces.
 	// +optional
 	Namespaces []string `json:"namespaces,omitempty"`
+
+	// NodeTargets defines per-hardware-type pod targets.
+	// If specified, the rebalancer will try to achieve these specific pod counts per node type.
+	// If not specified, pods are distributed evenly across all nodes.
+	// +optional
+	NodeTargets []NodeTarget `json:"nodeTargets,omitempty"`
+
+	// IntervalSeconds sets how often the rebalancer runs to maintain balance.
+	// If set to 0 or not specified, this is a one-shot rebalance request.
+	// If set to a positive value, the rebalancer will continuously run at this interval.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	IntervalSeconds int32 `json:"intervalSeconds,omitempty"`
 
 	// BatchSize is the number of pods to evict per batch.
 	// +kubebuilder:validation:Minimum=1
@@ -34,7 +59,7 @@ type RebalanceRequestSpec struct {
 }
 
 // RebalancePhase represents the current phase of a rebalance operation
-// +kubebuilder:validation:Enum=Pending;Running;Completed;Failed
+// +kubebuilder:validation:Enum=Pending;Running;Completed;Failed;Active
 type RebalancePhase string
 
 const (
@@ -42,6 +67,7 @@ const (
 	RebalancePhaseRunning   RebalancePhase = "Running"
 	RebalancePhaseCompleted RebalancePhase = "Completed"
 	RebalancePhaseFailed    RebalancePhase = "Failed"
+	RebalancePhaseActive    RebalancePhase = "Active" // For interval-based continuous rebalancing
 )
 
 // RebalanceRequestStatus defines the observed state of RebalanceRequest
@@ -50,17 +76,31 @@ type RebalanceRequestStatus struct {
 	// +kubebuilder:default=Pending
 	Phase RebalancePhase `json:"phase,omitempty"`
 
-	// PodsEvicted is the number of pods that have been evicted.
+	// PodsEvicted is the number of pods that have been evicted in the current/last run.
 	PodsEvicted int32 `json:"podsEvicted,omitempty"`
+
+	// TotalPodsEvicted is the cumulative number of pods evicted across all runs (for interval-based).
+	TotalPodsEvicted int32 `json:"totalPodsEvicted,omitempty"`
 
 	// TotalPods is the total number of pods that were candidates for eviction.
 	TotalPods int32 `json:"totalPods,omitempty"`
+
+	// RunCount tracks how many times the rebalancer has run (for interval-based).
+	RunCount int32 `json:"runCount,omitempty"`
 
 	// StartTime is when the rebalance operation started.
 	// +optional
 	StartTime *metav1.Time `json:"startTime,omitempty"`
 
-	// CompletionTime is when the rebalance operation completed.
+	// LastRunTime is when the last rebalance run completed (for interval-based).
+	// +optional
+	LastRunTime *metav1.Time `json:"lastRunTime,omitempty"`
+
+	// NextRunTime is when the next rebalance run is scheduled (for interval-based).
+	// +optional
+	NextRunTime *metav1.Time `json:"nextRunTime,omitempty"`
+
+	// CompletionTime is when the rebalance operation completed (only set for one-shot).
 	// +optional
 	CompletionTime *metav1.Time `json:"completionTime,omitempty"`
 
@@ -76,8 +116,10 @@ type RebalanceRequestStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
-// +kubebuilder:printcolumn:name="Evicted",type=integer,JSONPath=`.status.podsEvicted`
-// +kubebuilder:printcolumn:name="Total",type=integer,JSONPath=`.status.totalPods`
+// +kubebuilder:printcolumn:name="Interval",type=integer,JSONPath=`.spec.intervalSeconds`
+// +kubebuilder:printcolumn:name="Runs",type=integer,JSONPath=`.status.runCount`
+// +kubebuilder:printcolumn:name="Evicted",type=integer,JSONPath=`.status.totalPodsEvicted`
+// +kubebuilder:printcolumn:name="LastRun",type=date,JSONPath=`.status.lastRunTime`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // RebalanceRequest is the Schema for the rebalancerequests API

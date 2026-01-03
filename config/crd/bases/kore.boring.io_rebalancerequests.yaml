@@ -21,12 +21,18 @@ spec:
         - jsonPath: .status.phase
           name: Phase
           type: string
-        - jsonPath: .status.podsEvicted
+        - jsonPath: .spec.intervalSeconds
+          name: Interval
+          type: integer
+        - jsonPath: .status.runCount
+          name: Runs
+          type: integer
+        - jsonPath: .status.totalPodsEvicted
           name: Evicted
           type: integer
-        - jsonPath: .status.totalPods
-          name: Total
-          type: integer
+        - jsonPath: .status.lastRunTime
+          name: LastRun
+          type: date
         - jsonPath: .metadata.creationTimestamp
           name: Age
           type: date
@@ -62,10 +68,34 @@ spec:
                   default: false
                   description: DryRun if true, will only log what would be evicted without actually evicting.
                   type: boolean
+                intervalSeconds:
+                  description: IntervalSeconds sets how often the rebalancer runs to maintain balance. If 0 or not specified, this is a one-shot request. If positive, runs continuously at this interval.
+                  minimum: 0
+                  format: int32
+                  type: integer
                 namespaces:
                   description: Namespaces to target. Empty means all namespaces.
                   items:
                     type: string
+                  type: array
+                nodeTargets:
+                  description: NodeTargets defines per-hardware-type pod targets. If specified, the rebalancer will try to achieve these specific pod counts per node type.
+                  items:
+                    description: NodeTarget defines the target number of pods for nodes matching a selector.
+                    properties:
+                      nodeSelector:
+                        additionalProperties:
+                          type: string
+                        description: NodeSelector selects nodes by labels (e.g., hardware=x, hardware=z)
+                        type: object
+                      targetPodsPerNode:
+                        description: TargetPodsPerNode is the desired number of pods on each node matching this selector.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                    required:
+                      - targetPodsPerNode
+                    type: object
                   type: array
                 selector:
                   description: Selector specifies which pods to consider for rebalancing.
@@ -97,7 +127,7 @@ spec:
               description: RebalanceRequestStatus defines the observed state of RebalanceRequest
               properties:
                 completionTime:
-                  description: CompletionTime is when the rebalance operation completed.
+                  description: CompletionTime is when the rebalance operation completed (only set for one-shot).
                   format: date-time
                   type: string
                 conditions:
@@ -126,8 +156,16 @@ spec:
                       - type
                     type: object
                   type: array
+                lastRunTime:
+                  description: LastRunTime is when the last rebalance run completed (for interval-based).
+                  format: date-time
+                  type: string
                 message:
                   description: Message provides additional information about the current status.
+                  type: string
+                nextRunTime:
+                  description: NextRunTime is when the next rebalance run is scheduled (for interval-based).
+                  format: date-time
                   type: string
                 phase:
                   default: Pending
@@ -137,9 +175,14 @@ spec:
                     - Running
                     - Completed
                     - Failed
+                    - Active
                   type: string
                 podsEvicted:
-                  description: PodsEvicted is the number of pods that have been evicted.
+                  description: PodsEvicted is the number of pods that have been evicted in the current/last run.
+                  format: int32
+                  type: integer
+                runCount:
+                  description: RunCount tracks how many times the rebalancer has run (for interval-based).
                   format: int32
                   type: integer
                 startTime:
@@ -148,6 +191,10 @@ spec:
                   type: string
                 totalPods:
                   description: TotalPods is the total number of pods that were candidates for eviction.
+                  format: int32
+                  type: integer
+                totalPodsEvicted:
+                  description: TotalPodsEvicted is the cumulative number of pods evicted across all runs.
                   format: int32
                   type: integer
               type: object

@@ -33,9 +33,11 @@ func NewEngine(c client.Client) *Engine {
 
 // NodePodCount represents a node and its pod count for balancing decisions
 type NodePodCount struct {
-	NodeName string
-	PodCount int
-	Pods     []corev1.Pod
+	NodeName  string
+	Node      *corev1.Node
+	PodCount  int
+	TargetPods int // Target pods for this node (-1 means use average)
+	Pods      []corev1.Pod
 }
 
 // RebalanceResult contains the result of a rebalance operation
@@ -71,7 +73,7 @@ func (e *Engine) ExecuteRebalance(ctx context.Context, req *korev1alpha1.Rebalan
 	}
 
 	// Calculate node imbalance and identify pods to evict
-	podsToEvict := e.calculatePodsToEvict(nodes, pods)
+	podsToEvict := e.calculatePodsToEvict(nodes, pods, req.Spec.NodeTargets)
 
 	if len(podsToEvict) == 0 {
 		return RebalanceResult{
@@ -234,10 +236,13 @@ func (e *Engine) getCandidatePods(ctx context.Context, req *korev1alpha1.Rebalan
 }
 
 // calculatePodsToEvict determines which pods should be evicted to achieve balance
-func (e *Engine) calculatePodsToEvict(nodes []corev1.Node, pods []corev1.Pod) []corev1.Pod {
-	// Build node -> pods mapping
+func (e *Engine) calculatePodsToEvict(nodes []corev1.Node, pods []corev1.Pod, nodeTargets []korev1alpha1.NodeTarget) []corev1.Pod {
+	// Build node -> pods mapping with target info
+	nodeMap := make(map[string]*corev1.Node)
 	nodePodMap := make(map[string][]corev1.Pod)
-	for _, node := range nodes {
+	for i := range nodes {
+		node := &nodes[i]
+		nodeMap[node.Name] = node
 		nodePodMap[node.Name] = []corev1.Pod{}
 	}
 	for _, pod := range pods {
@@ -246,36 +251,45 @@ func (e *Engine) calculatePodsToEvict(nodes []corev1.Node, pods []corev1.Pod) []
 		}
 	}
 
-	// Convert to slice for sorting
+	// Convert to slice with target information
 	var nodeCounts []NodePodCount
 	for nodeName, nodePods := range nodePodMap {
+		node := nodeMap[nodeName]
+		target := e.getTargetForNode(node, nodeTargets)
 		nodeCounts = append(nodeCounts, NodePodCount{
-			NodeName: nodeName,
-			PodCount: len(nodePods),
-			Pods:     nodePods,
+			NodeName:   nodeName,
+			Node:       node,
+			PodCount:   len(nodePods),
+			TargetPods: target,
+			Pods:       nodePods,
 		})
 	}
 
-	// Calculate average pods per node
-	totalPods := len(pods)
-	avgPodsPerNode := float64(totalPods) / float64(len(nodes))
+	// If no node targets specified, calculate average-based targets
+	if len(nodeTargets) == 0 {
+		totalPods := len(pods)
+		avgPodsPerNode := float64(totalPods) / float64(len(nodes))
+		for i := range nodeCounts {
+			nodeCounts[i].TargetPods = int(avgPodsPerNode)
+		}
+	}
 
-	// Sort nodes by pod count (descending)
+	// Sort nodes by excess pods (descending) - nodes with most excess first
 	sort.Slice(nodeCounts, func(i, j int) bool {
-		return nodeCounts[i].PodCount > nodeCounts[j].PodCount
+		excessI := nodeCounts[i].PodCount - nodeCounts[i].TargetPods
+		excessJ := nodeCounts[j].PodCount - nodeCounts[j].TargetPods
+		return excessI > excessJ
 	})
 
 	// Identify pods to evict from overloaded nodes
 	var podsToEvict []corev1.Pod
 	for _, nc := range nodeCounts {
-		// Only evict from nodes that have more than average + 1 pods
-		threshold := int(avgPodsPerNode) + 1
-		if nc.PodCount <= threshold {
+		// Calculate excess pods (pods above target)
+		// Allow 1 pod tolerance to avoid thrashing
+		excessPods := nc.PodCount - nc.TargetPods - 1
+		if excessPods <= 0 {
 			continue
 		}
-
-		// Calculate how many pods to evict from this node
-		excessPods := nc.PodCount - threshold
 
 		// Select pods to evict (prefer newer pods)
 		podsOnNode := nc.Pods
@@ -289,6 +303,39 @@ func (e *Engine) calculatePodsToEvict(nodes []corev1.Node, pods []corev1.Pod) []
 	}
 
 	return podsToEvict
+}
+
+// getTargetForNode returns the target pod count for a node based on nodeTargets.
+// Returns -1 if no matching target is found (will use average later).
+func (e *Engine) getTargetForNode(node *corev1.Node, nodeTargets []korev1alpha1.NodeTarget) int {
+	if len(nodeTargets) == 0 {
+		return -1
+	}
+
+	for _, target := range nodeTargets {
+		if matchesNodeSelector(node, target.NodeSelector) {
+			return int(target.TargetPodsPerNode)
+		}
+	}
+
+	// No matching target found - this node won't have pods scheduled to it
+	// Return 0 to evict all pods from unmatched nodes
+	return 0
+}
+
+// matchesNodeSelector checks if a node matches the given selector
+func matchesNodeSelector(node *corev1.Node, selector map[string]string) bool {
+	if len(selector) == 0 {
+		// Empty selector matches all nodes
+		return true
+	}
+
+	for key, value := range selector {
+		if nodeValue, ok := node.Labels[key]; !ok || nodeValue != value {
+			return false
+		}
+	}
+	return true
 }
 
 // evictPod evicts a pod using the eviction API

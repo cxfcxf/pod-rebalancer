@@ -1,8 +1,9 @@
 ---
+# One-shot rebalance example
 apiVersion: kore.boring.io/v1alpha1
 kind: RebalanceRequest
 metadata:
-  name: sample-rebalance
+  name: oneshot-rebalance
   namespace: default
 spec:
   # Optional: Only rebalance pods with specific labels (in addition to kore.boring.io/rebalance=true)
@@ -10,16 +11,46 @@ spec:
     matchLabels:
       app: my-app
 
+  # Number of pods to evict per batch
+  batchSize: 5
+
+  # Seconds to wait between batches
+  batchIntervalSeconds: 30
+
+  # Set to true to only log what would be evicted
+  dryRun: false
+---
+# Interval-based rebalance with hardware-specific targets
+apiVersion: kore.boring.io/v1alpha1
+kind: RebalanceRequest
+metadata:
+  name: continuous-rebalance
+  namespace: default
+spec:
+  # Run every 5 minutes to maintain balance
+  intervalSeconds: 300
+
+  # Define per-hardware-type pod targets
+  # Nodes with hardware=x label should have 7 pods each
+  # Nodes with hardware=z label should have 6 pods each
+  nodeTargets:
+    - nodeSelector:
+        hardware: x
+      targetPodsPerNode: 7
+    - nodeSelector:
+        hardware: z
+      targetPodsPerNode: 6
+
   # Optional: Target specific namespaces (empty means all non-system namespaces)
   namespaces:
     - default
     - production
 
   # Number of pods to evict per batch
-  batchSize: 5
+  batchSize: 3
 
   # Seconds to wait between batches
-  batchIntervalSeconds: 30
+  batchIntervalSeconds: 15
 
   # Set to true to only log what would be evicted
   dryRun: false
