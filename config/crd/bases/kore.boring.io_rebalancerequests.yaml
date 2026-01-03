@@ -42,10 +42,8 @@ spec:
           description: RebalanceRequest is the Schema for the rebalancerequests API
           properties:
             apiVersion:
-              description: 'APIVersion defines the versioned schema of this representation of an object.'
               type: string
             kind:
-              description: 'Kind is a string value representing the REST resource this object represents.'
               type: string
             metadata:
               type: object
@@ -66,11 +64,12 @@ spec:
                   type: integer
                 dryRun:
                   default: false
-                  description: DryRun if true, will only log what would be evicted without actually evicting.
+                  description: DryRun if true, will only log what would be evicted.
                   type: boolean
                 intervalSeconds:
-                  description: IntervalSeconds sets how often the rebalancer runs to maintain balance. If 0 or not specified, this is a one-shot request. If positive, runs continuously at this interval.
-                  minimum: 0
+                  default: 60
+                  description: IntervalSeconds sets how often the rebalancer checks and maintains balance.
+                  minimum: 30
                   format: int32
                   type: integer
                 namespaces:
@@ -79,22 +78,22 @@ spec:
                     type: string
                   type: array
                 nodeTargets:
-                  description: NodeTargets defines per-hardware-type pod targets. If specified, the rebalancer will try to achieve these specific pod counts per node type.
+                  description: NodeTargets defines per-hardware-type maximum pod counts. Pods are evicted from nodes exceeding their maximum.
                   items:
-                    description: NodeTarget defines the target number of pods for nodes matching a selector.
+                    description: NodeTarget defines the maximum number of pods for nodes matching a selector.
                     properties:
+                      maxPodsPerNode:
+                        description: MaxPodsPerNode is the maximum pods allowed on each node matching this selector.
+                        format: int32
+                        minimum: 1
+                        type: integer
                       nodeSelector:
                         additionalProperties:
                           type: string
-                        description: NodeSelector selects nodes by labels (e.g., hardware=x, hardware=z)
+                        description: NodeSelector selects nodes by labels.
                         type: object
-                      targetPodsPerNode:
-                        description: TargetPodsPerNode is the desired number of pods on each node matching this selector.
-                        format: int32
-                        minimum: 0
-                        type: integer
                     required:
-                      - targetPodsPerNode
+                      - maxPodsPerNode
                     type: object
                   type: array
                 selector:
@@ -126,12 +125,7 @@ spec:
             status:
               description: RebalanceRequestStatus defines the observed state of RebalanceRequest
               properties:
-                completionTime:
-                  description: CompletionTime is when the rebalance operation completed (only set for one-shot).
-                  format: date-time
-                  type: string
                 conditions:
-                  description: Conditions represent the latest available observations.
                   items:
                     properties:
                       lastTransitionTime:
@@ -156,45 +150,39 @@ spec:
                       - type
                     type: object
                   type: array
+                lastEvictedCount:
+                  description: LastEvictedCount is the number of pods evicted in the last run.
+                  format: int32
+                  type: integer
                 lastRunTime:
-                  description: LastRunTime is when the last rebalance run completed (for interval-based).
+                  description: LastRunTime is when the last rebalance check completed.
                   format: date-time
                   type: string
                 message:
                   description: Message provides additional information about the current status.
                   type: string
                 nextRunTime:
-                  description: NextRunTime is when the next rebalance run is scheduled (for interval-based).
+                  description: NextRunTime is when the next rebalance check is scheduled.
                   format: date-time
                   type: string
                 phase:
                   default: Pending
-                  description: Phase represents the current phase of the rebalance operation.
+                  description: Phase represents the current phase.
                   enum:
                     - Pending
-                    - Running
-                    - Completed
-                    - Failed
                     - Active
+                    - Failed
                   type: string
-                podsEvicted:
-                  description: PodsEvicted is the number of pods that have been evicted in the current/last run.
-                  format: int32
-                  type: integer
                 runCount:
-                  description: RunCount tracks how many times the rebalancer has run (for interval-based).
+                  description: RunCount tracks how many times the rebalancer has run.
                   format: int32
                   type: integer
                 startTime:
-                  description: StartTime is when the rebalance operation started.
+                  description: StartTime is when the rebalancer started.
                   format: date-time
                   type: string
-                totalPods:
-                  description: TotalPods is the total number of pods that were candidates for eviction.
-                  format: int32
-                  type: integer
                 totalPodsEvicted:
-                  description: TotalPodsEvicted is the cumulative number of pods evicted across all runs.
+                  description: TotalPodsEvicted is the cumulative number of pods evicted.
                   format: int32
                   type: integer
               type: object

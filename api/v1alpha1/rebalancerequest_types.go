@@ -4,16 +4,18 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// NodeTarget defines the target number of pods for nodes matching a selector.
-// This allows different hardware types to have different pod densities.
+// NodeTarget defines the maximum number of pods for nodes matching a selector.
+// Pods are only evicted when a node exceeds its maximum, allowing the scheduler
+// to place them on nodes with capacity.
 type NodeTarget struct {
 	// NodeSelector selects nodes by labels (e.g., hardware=x, hardware=z)
 	// +optional
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 
-	// TargetPodsPerNode is the desired number of pods on each node matching this selector.
-	// +kubebuilder:validation:Minimum=0
-	TargetPodsPerNode int32 `json:"targetPodsPerNode"`
+	// MaxPodsPerNode is the maximum number of pods allowed on each node matching this selector.
+	// Pods are evicted only when this limit is exceeded.
+	// +kubebuilder:validation:Minimum=1
+	MaxPodsPerNode int32 `json:"maxPodsPerNode"`
 }
 
 // RebalanceRequestSpec defines the desired state of RebalanceRequest
@@ -27,17 +29,15 @@ type RebalanceRequestSpec struct {
 	// +optional
 	Namespaces []string `json:"namespaces,omitempty"`
 
-	// NodeTargets defines per-hardware-type pod targets.
-	// If specified, the rebalancer will try to achieve these specific pod counts per node type.
-	// If not specified, pods are distributed evenly across all nodes.
+	// NodeTargets defines per-hardware-type maximum pod counts.
+	// Pods are evicted from nodes exceeding their maximum to allow redistribution.
+	// If not specified, pods are balanced evenly across all nodes.
 	// +optional
 	NodeTargets []NodeTarget `json:"nodeTargets,omitempty"`
 
-	// IntervalSeconds sets how often the rebalancer runs to maintain balance.
-	// If set to 0 or not specified, this is a one-shot rebalance request.
-	// If set to a positive value, the rebalancer will continuously run at this interval.
-	// +kubebuilder:validation:Minimum=0
-	// +optional
+	// IntervalSeconds sets how often the rebalancer checks and maintains balance.
+	// +kubebuilder:validation:Minimum=30
+	// +kubebuilder:default=60
 	IntervalSeconds int32 `json:"intervalSeconds,omitempty"`
 
 	// BatchSize is the number of pods to evict per batch.
@@ -59,15 +59,13 @@ type RebalanceRequestSpec struct {
 }
 
 // RebalancePhase represents the current phase of a rebalance operation
-// +kubebuilder:validation:Enum=Pending;Running;Completed;Failed;Active
+// +kubebuilder:validation:Enum=Pending;Active;Failed
 type RebalancePhase string
 
 const (
-	RebalancePhasePending   RebalancePhase = "Pending"
-	RebalancePhaseRunning   RebalancePhase = "Running"
-	RebalancePhaseCompleted RebalancePhase = "Completed"
-	RebalancePhaseFailed    RebalancePhase = "Failed"
-	RebalancePhaseActive    RebalancePhase = "Active" // For interval-based continuous rebalancing
+	RebalancePhasePending RebalancePhase = "Pending"
+	RebalancePhaseActive  RebalancePhase = "Active"
+	RebalancePhaseFailed  RebalancePhase = "Failed"
 )
 
 // RebalanceRequestStatus defines the observed state of RebalanceRequest
@@ -76,33 +74,26 @@ type RebalanceRequestStatus struct {
 	// +kubebuilder:default=Pending
 	Phase RebalancePhase `json:"phase,omitempty"`
 
-	// PodsEvicted is the number of pods that have been evicted in the current/last run.
-	PodsEvicted int32 `json:"podsEvicted,omitempty"`
+	// LastEvictedCount is the number of pods evicted in the last run.
+	LastEvictedCount int32 `json:"lastEvictedCount,omitempty"`
 
-	// TotalPodsEvicted is the cumulative number of pods evicted across all runs (for interval-based).
+	// TotalPodsEvicted is the cumulative number of pods evicted across all runs.
 	TotalPodsEvicted int32 `json:"totalPodsEvicted,omitempty"`
 
-	// TotalPods is the total number of pods that were candidates for eviction.
-	TotalPods int32 `json:"totalPods,omitempty"`
-
-	// RunCount tracks how many times the rebalancer has run (for interval-based).
+	// RunCount tracks how many times the rebalancer has run.
 	RunCount int32 `json:"runCount,omitempty"`
 
-	// StartTime is when the rebalance operation started.
+	// StartTime is when the rebalancer started.
 	// +optional
 	StartTime *metav1.Time `json:"startTime,omitempty"`
 
-	// LastRunTime is when the last rebalance run completed (for interval-based).
+	// LastRunTime is when the last rebalance check completed.
 	// +optional
 	LastRunTime *metav1.Time `json:"lastRunTime,omitempty"`
 
-	// NextRunTime is when the next rebalance run is scheduled (for interval-based).
+	// NextRunTime is when the next rebalance check is scheduled.
 	// +optional
 	NextRunTime *metav1.Time `json:"nextRunTime,omitempty"`
-
-	// CompletionTime is when the rebalance operation completed (only set for one-shot).
-	// +optional
-	CompletionTime *metav1.Time `json:"completionTime,omitempty"`
 
 	// Message provides additional information about the current status.
 	// +optional

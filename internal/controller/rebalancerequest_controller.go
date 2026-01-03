@@ -40,28 +40,18 @@ func (r *RebalanceRequestReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	isIntervalBased := rebalanceReq.Spec.IntervalSeconds > 0
-
-	// For one-shot requests, skip if already completed or failed
-	if !isIntervalBased {
-		if rebalanceReq.Status.Phase == korev1alpha1.RebalancePhaseCompleted ||
-			rebalanceReq.Status.Phase == korev1alpha1.RebalancePhaseFailed {
-			return ctrl.Result{}, nil
-		}
+	// Get interval (default 60 seconds)
+	interval := time.Duration(rebalanceReq.Spec.IntervalSeconds) * time.Second
+	if interval < 30*time.Second {
+		interval = 60 * time.Second
 	}
 
-	// Initialize status if pending or first run
+	// Initialize status if pending
 	if rebalanceReq.Status.Phase == "" || rebalanceReq.Status.Phase == korev1alpha1.RebalancePhasePending {
 		now := metav1.Now()
+		rebalanceReq.Status.Phase = korev1alpha1.RebalancePhaseActive
 		rebalanceReq.Status.StartTime = &now
-
-		if isIntervalBased {
-			rebalanceReq.Status.Phase = korev1alpha1.RebalancePhaseActive
-			rebalanceReq.Status.Message = "Starting interval-based rebalancing"
-		} else {
-			rebalanceReq.Status.Phase = korev1alpha1.RebalancePhaseRunning
-			rebalanceReq.Status.Message = "Starting rebalance operation"
-		}
+		rebalanceReq.Status.Message = "Rebalancer active"
 
 		if err := r.Status().Update(ctx, &rebalanceReq); err != nil {
 			logger.Error(err, "Failed to update status")
@@ -70,70 +60,45 @@ func (r *RebalanceRequestReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// For interval-based: check if it's time to run
-	if isIntervalBased && rebalanceReq.Status.Phase == korev1alpha1.RebalancePhaseActive {
-		if rebalanceReq.Status.NextRunTime != nil {
-			if time.Now().Before(rebalanceReq.Status.NextRunTime.Time) {
-				// Not time yet, requeue for the next run
-				waitDuration := time.Until(rebalanceReq.Status.NextRunTime.Time)
-				logger.V(1).Info("Waiting for next scheduled run", "nextRun", rebalanceReq.Status.NextRunTime.Time)
-				return ctrl.Result{RequeueAfter: waitDuration}, nil
-			}
+	// Check if it's time to run
+	if rebalanceReq.Status.NextRunTime != nil {
+		if time.Now().Before(rebalanceReq.Status.NextRunTime.Time) {
+			waitDuration := time.Until(rebalanceReq.Status.NextRunTime.Time)
+			return ctrl.Result{RequeueAfter: waitDuration}, nil
 		}
 	}
 
 	// Execute the rebalance
-	logger.Info("Executing rebalance",
+	logger.Info("Running rebalance check",
 		"name", rebalanceReq.Name,
 		"namespace", rebalanceReq.Namespace,
-		"runCount", rebalanceReq.Status.RunCount+1,
-		"intervalBased", isIntervalBased,
+		"run", rebalanceReq.Status.RunCount+1,
 	)
 
 	result := r.Engine.ExecuteRebalance(ctx, &rebalanceReq)
 	now := metav1.Now()
 
-	// Update status based on result
-	rebalanceReq.Status.PodsEvicted = result.PodsEvicted
-	rebalanceReq.Status.TotalPods = result.TotalPods
+	// Update status
+	rebalanceReq.Status.LastEvictedCount = result.PodsEvicted
 	rebalanceReq.Status.TotalPodsEvicted += result.PodsEvicted
 	rebalanceReq.Status.RunCount++
 	rebalanceReq.Status.LastRunTime = &now
 
+	// Schedule next run
+	nextRun := metav1.NewTime(now.Add(interval))
+	rebalanceReq.Status.NextRunTime = &nextRun
+
 	if result.Error != nil {
-		if isIntervalBased {
-			// For interval-based, log error but continue
-			rebalanceReq.Status.Message = fmt.Sprintf("Run %d failed: %s", rebalanceReq.Status.RunCount, result.Error.Error())
-			logger.Error(result.Error, "Rebalance run failed, will retry on next interval")
-		} else {
-			rebalanceReq.Status.Phase = korev1alpha1.RebalancePhaseFailed
-			rebalanceReq.Status.CompletionTime = &now
-			rebalanceReq.Status.Message = result.Error.Error()
-			logger.Error(result.Error, "Rebalance failed")
-		}
+		rebalanceReq.Status.Message = fmt.Sprintf("Run %d error: %s", rebalanceReq.Status.RunCount, result.Error.Error())
+		logger.Error(result.Error, "Rebalance check failed, will retry")
 	} else {
-		if isIntervalBased {
-			rebalanceReq.Status.Message = fmt.Sprintf("Run %d: %s", rebalanceReq.Status.RunCount, result.Message)
-			logger.Info("Rebalance run completed",
-				"run", rebalanceReq.Status.RunCount,
+		rebalanceReq.Status.Message = fmt.Sprintf("Run %d: %s", rebalanceReq.Status.RunCount, result.Message)
+		if result.PodsEvicted > 0 {
+			logger.Info("Rebalance check completed",
 				"evicted", result.PodsEvicted,
 				"totalEvicted", rebalanceReq.Status.TotalPodsEvicted,
 			)
-		} else {
-			rebalanceReq.Status.Phase = korev1alpha1.RebalancePhaseCompleted
-			rebalanceReq.Status.CompletionTime = &now
-			rebalanceReq.Status.Message = result.Message
-			logger.Info("Rebalance completed", "evicted", result.PodsEvicted, "total", result.TotalPods)
 		}
-	}
-
-	// Schedule next run for interval-based
-	var requeueAfter time.Duration
-	if isIntervalBased {
-		interval := time.Duration(rebalanceReq.Spec.IntervalSeconds) * time.Second
-		nextRun := metav1.NewTime(now.Add(interval))
-		rebalanceReq.Status.NextRunTime = &nextRun
-		requeueAfter = interval
 	}
 
 	if err := r.Status().Update(ctx, &rebalanceReq); err != nil {
@@ -141,10 +106,7 @@ func (r *RebalanceRequestReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, err
 	}
 
-	if isIntervalBased {
-		return ctrl.Result{RequeueAfter: requeueAfter}, nil
-	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: interval}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

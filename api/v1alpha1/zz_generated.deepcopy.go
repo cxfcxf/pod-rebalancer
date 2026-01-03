@@ -137,10 +137,6 @@ func (in *RebalanceRequestStatus) DeepCopyInto(out *RebalanceRequestStatus) {
 		in, out := &in.NextRunTime, &out.NextRunTime
 		*out = (*in).DeepCopy()
 	}
-	if in.CompletionTime != nil {
-		in, out := &in.CompletionTime, &out.CompletionTime
-		*out = (*in).DeepCopy()
-	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))

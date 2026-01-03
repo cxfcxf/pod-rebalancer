@@ -33,11 +33,11 @@ func NewEngine(c client.Client) *Engine {
 
 // NodePodCount represents a node and its pod count for balancing decisions
 type NodePodCount struct {
-	NodeName  string
-	Node      *corev1.Node
-	PodCount  int
-	TargetPods int // Target pods for this node (-1 means use average)
-	Pods      []corev1.Pod
+	NodeName   string
+	Node       *corev1.Node
+	PodCount   int
+	MaxPods    int // Maximum pods allowed (-1 means no limit, use average)
+	Pods       []corev1.Pod
 }
 
 // RebalanceResult contains the result of a rebalance operation
@@ -58,8 +58,8 @@ func (e *Engine) ExecuteRebalance(ctx context.Context, req *korev1alpha1.Rebalan
 		return RebalanceResult{Error: fmt.Errorf("failed to get nodes: %w", err)}
 	}
 
-	if len(nodes) < 2 {
-		return RebalanceResult{Message: "Not enough nodes for rebalancing (need at least 2)"}
+	if len(nodes) < 1 {
+		return RebalanceResult{Message: "No ready nodes found"}
 	}
 
 	// Get pods that are candidates for rebalancing
@@ -72,17 +72,17 @@ func (e *Engine) ExecuteRebalance(ctx context.Context, req *korev1alpha1.Rebalan
 		return RebalanceResult{Message: "No pods found matching criteria"}
 	}
 
-	// Calculate node imbalance and identify pods to evict
+	// Calculate which pods exceed their node's maximum
 	podsToEvict := e.calculatePodsToEvict(nodes, pods, req.Spec.NodeTargets)
 
 	if len(podsToEvict) == 0 {
 		return RebalanceResult{
 			TotalPods: int32(len(pods)),
-			Message:   "Cluster is already balanced",
+			Message:   "All nodes within limits",
 		}
 	}
 
-	logger.Info("Starting rebalance operation",
+	logger.Info("Found pods exceeding node limits",
 		"totalCandidatePods", len(pods),
 		"podsToEvict", len(podsToEvict),
 		"dryRun", req.Spec.DryRun,
@@ -140,11 +140,11 @@ func (e *Engine) ExecuteRebalance(ctx context.Context, req *korev1alpha1.Rebalan
 	return RebalanceResult{
 		PodsEvicted: evicted,
 		TotalPods:   int32(len(pods)),
-		Message:     fmt.Sprintf("Successfully evicted %d pods", evicted),
+		Message:     fmt.Sprintf("Evicted %d pods exceeding limits", evicted),
 	}
 }
 
-// getReadyNodes returns all nodes that are Ready
+// getReadyNodes returns all nodes that are Ready and schedulable
 func (e *Engine) getReadyNodes(ctx context.Context) ([]corev1.Node, error) {
 	var nodeList corev1.NodeList
 	if err := e.Client.List(ctx, &nodeList); err != nil {
@@ -235,9 +235,9 @@ func (e *Engine) getCandidatePods(ctx context.Context, req *korev1alpha1.Rebalan
 	return allPods, nil
 }
 
-// calculatePodsToEvict determines which pods should be evicted to achieve balance
+// calculatePodsToEvict determines which pods should be evicted because they exceed node limits
 func (e *Engine) calculatePodsToEvict(nodes []corev1.Node, pods []corev1.Pod, nodeTargets []korev1alpha1.NodeTarget) []corev1.Pod {
-	// Build node -> pods mapping with target info
+	// Build node -> pods mapping
 	nodeMap := make(map[string]*corev1.Node)
 	nodePodMap := make(map[string][]corev1.Pod)
 	for i := range nodes {
@@ -251,48 +251,51 @@ func (e *Engine) calculatePodsToEvict(nodes []corev1.Node, pods []corev1.Pod, no
 		}
 	}
 
-	// Convert to slice with target information
+	// Convert to slice with max pod information
 	var nodeCounts []NodePodCount
 	for nodeName, nodePods := range nodePodMap {
 		node := nodeMap[nodeName]
-		target := e.getTargetForNode(node, nodeTargets)
+		maxPods := e.getMaxPodsForNode(node, nodeTargets)
 		nodeCounts = append(nodeCounts, NodePodCount{
-			NodeName:   nodeName,
-			Node:       node,
-			PodCount:   len(nodePods),
-			TargetPods: target,
-			Pods:       nodePods,
+			NodeName: nodeName,
+			Node:     node,
+			PodCount: len(nodePods),
+			MaxPods:  maxPods,
+			Pods:     nodePods,
 		})
 	}
 
-	// If no node targets specified, calculate average-based targets
+	// If no node targets specified, use average-based limit
+	// (evict from nodes that have significantly more than average)
 	if len(nodeTargets) == 0 {
 		totalPods := len(pods)
 		avgPodsPerNode := float64(totalPods) / float64(len(nodes))
+		// Set max to average + 1 (allow some slack)
+		maxFromAvg := int(avgPodsPerNode) + 1
 		for i := range nodeCounts {
-			nodeCounts[i].TargetPods = int(avgPodsPerNode)
+			nodeCounts[i].MaxPods = maxFromAvg
 		}
 	}
 
 	// Sort nodes by excess pods (descending) - nodes with most excess first
 	sort.Slice(nodeCounts, func(i, j int) bool {
-		excessI := nodeCounts[i].PodCount - nodeCounts[i].TargetPods
-		excessJ := nodeCounts[j].PodCount - nodeCounts[j].TargetPods
+		excessI := nodeCounts[i].PodCount - nodeCounts[i].MaxPods
+		excessJ := nodeCounts[j].PodCount - nodeCounts[j].MaxPods
 		return excessI > excessJ
 	})
 
-	// Identify pods to evict from overloaded nodes
+	// Identify pods to evict from nodes exceeding their maximum
 	var podsToEvict []corev1.Pod
 	for _, nc := range nodeCounts {
-		// Calculate excess pods (pods above target)
-		// Allow 1 pod tolerance to avoid thrashing
-		excessPods := nc.PodCount - nc.TargetPods - 1
+		// Only evict if exceeding maximum
+		excessPods := nc.PodCount - nc.MaxPods
 		if excessPods <= 0 {
 			continue
 		}
 
-		// Select pods to evict (prefer newer pods)
-		podsOnNode := nc.Pods
+		// Select pods to evict (prefer newer pods - they're more likely to reschedule quickly)
+		podsOnNode := make([]corev1.Pod, len(nc.Pods))
+		copy(podsOnNode, nc.Pods)
 		sort.Slice(podsOnNode, func(i, j int) bool {
 			return podsOnNode[i].CreationTimestamp.After(podsOnNode[j].CreationTimestamp.Time)
 		})
@@ -305,22 +308,22 @@ func (e *Engine) calculatePodsToEvict(nodes []corev1.Node, pods []corev1.Pod, no
 	return podsToEvict
 }
 
-// getTargetForNode returns the target pod count for a node based on nodeTargets.
+// getMaxPodsForNode returns the maximum pod count for a node based on nodeTargets.
 // Returns -1 if no matching target is found (will use average later).
-func (e *Engine) getTargetForNode(node *corev1.Node, nodeTargets []korev1alpha1.NodeTarget) int {
+func (e *Engine) getMaxPodsForNode(node *corev1.Node, nodeTargets []korev1alpha1.NodeTarget) int {
 	if len(nodeTargets) == 0 {
 		return -1
 	}
 
 	for _, target := range nodeTargets {
 		if matchesNodeSelector(node, target.NodeSelector) {
-			return int(target.TargetPodsPerNode)
+			return int(target.MaxPodsPerNode)
 		}
 	}
 
-	// No matching target found - this node won't have pods scheduled to it
-	// Return 0 to evict all pods from unmatched nodes
-	return 0
+	// No matching target found - use a high default so we don't evict from unknown node types
+	// This allows pods to schedule on new node types without being immediately evicted
+	return 1000
 }
 
 // matchesNodeSelector checks if a node matches the given selector
