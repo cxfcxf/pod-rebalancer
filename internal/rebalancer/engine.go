@@ -235,7 +235,7 @@ func (e *Engine) getCandidatePods(ctx context.Context, req *korev1alpha1.Rebalan
 	return allPods, nil
 }
 
-// calculatePodsToEvict determines which pods should be evicted because they exceed node limits
+// calculatePodsToEvict determines which pods should be evicted to balance across nodes proportionally
 func (e *Engine) calculatePodsToEvict(nodes []corev1.Node, pods []corev1.Pod, nodeTargets []korev1alpha1.NodeTarget) []corev1.Pod {
 	// Build node -> pods mapping
 	nodeMap := make(map[string]*corev1.Node)
@@ -265,10 +265,28 @@ func (e *Engine) calculatePodsToEvict(nodes []corev1.Node, pods []corev1.Pod, no
 		})
 	}
 
-	// If no node targets specified, use average-based limit
-	// (evict from nodes that have significantly more than average)
-	if len(nodeTargets) == 0 {
-		totalPods := len(pods)
+	totalPods := len(pods)
+
+	// Calculate target pods per node based on capacity-proportional distribution
+	if len(nodeTargets) > 0 {
+		// Capacity-proportional mode: distribute pods based on each node's max capacity
+		// Target = (nodeMax / totalCapacity) * totalPods
+		totalCapacity := 0
+		for _, nc := range nodeCounts {
+			totalCapacity += nc.MaxPods
+		}
+
+		// Calculate target for each node proportional to its capacity
+		for i := range nodeCounts {
+			if totalCapacity > 0 {
+				// Target = (nodeMax / totalCapacity) * totalPods
+				target := float64(nodeCounts[i].MaxPods) / float64(totalCapacity) * float64(totalPods)
+				// Use ceiling + 1 slack to avoid constant evictions
+				nodeCounts[i].MaxPods = int(target) + 1
+			}
+		}
+	} else {
+		// No node targets: use average-based limit (even spread)
 		avgPodsPerNode := float64(totalPods) / float64(len(nodes))
 		// Set max to average + 1 (allow some slack)
 		maxFromAvg := int(avgPodsPerNode) + 1
@@ -284,10 +302,10 @@ func (e *Engine) calculatePodsToEvict(nodes []corev1.Node, pods []corev1.Pod, no
 		return excessI > excessJ
 	})
 
-	// Identify pods to evict from nodes exceeding their maximum
+	// Identify pods to evict from nodes exceeding their target
 	var podsToEvict []corev1.Pod
 	for _, nc := range nodeCounts {
-		// Only evict if exceeding maximum
+		// Only evict if exceeding target
 		excessPods := nc.PodCount - nc.MaxPods
 		if excessPods <= 0 {
 			continue

@@ -15,11 +15,89 @@ A Kubernetes operator that continuously maintains pod distribution across nodes.
 
 1. The operator runs at a configurable interval (default: 60 seconds)
 2. For each check, it finds pods with the `kore.boring.io/rebalance: "true"` label
-3. It counts pods per node and compares against configured maximums
-4. Pods on nodes exceeding their maximum are evicted (newest first)
+3. It calculates proportional targets based on each node's capacity
+4. Pods on nodes exceeding their target are evicted (newest first)
 5. Evicted pods are rescheduled by their controllers to nodes with capacity
 
-**Key behavior**: Maximums are soft limits. When a node fails, remaining nodes can temporarily exceed their max. The rebalancer only evicts once a new node joins and has capacity.
+**Key behavior**: The rebalancer uses capacity-proportional distribution. When a new node joins, existing pods are rebalanced to utilize the new capacity, even if no node was "overloaded".
+
+## Algorithm
+
+The rebalancer uses a **capacity-proportional** algorithm to distribute pods across nodes based on their configured maximum capacity.
+
+### Calculation
+
+For each node, the target pod count is calculated as:
+
+```
+target = (nodeMaxPods / totalClusterCapacity) × totalPods + 1
+```
+
+Where:
+- `nodeMaxPods` = configured max for this node type
+- `totalClusterCapacity` = sum of all nodes' max pods
+- `totalPods` = current total pods being managed
+- `+1` = slack to avoid constant evictions
+
+Pods are evicted from any node where `currentPods > target`.
+
+### Scenario: Adding a new node (heterogeneous cluster)
+
+```
+Before:
+  Node A (high-memory): 15 pods, max 15
+  Node B (standard):     8 pods, max 8
+
+After adding Node C (high-memory, max 15):
+  Total pods: 23
+  Total capacity: 15 + 8 + 15 = 38
+
+  Target calculation:
+    Node A: (15/38) × 23 + 1 = 10
+    Node B: (8/38)  × 23 + 1 = 5
+    Node C: (15/38) × 23 + 1 = 10
+
+  Evictions:
+    Node A: 15 - 10 = 5 pods evicted
+    Node B: 8 - 5   = 3 pods evicted
+    Node C: 0 pods (receives evicted pods)
+
+  Result: A=10, B=5, C=8 (proportionally balanced)
+```
+
+### Scenario: Homogeneous cluster (even spread)
+
+When all nodes have the same `maxPodsPerNode`, the algorithm produces an even spread:
+
+```
+3 nodes, all max 10, total 15 pods
+Total capacity: 30
+
+Each node target: (10/30) × 15 + 1 = 6
+
+If distribution is A=10, B=3, C=2:
+  Node A: 10 - 6 = 4 pods evicted
+  Node B: 3 - 6 = ok
+  Node C: 2 - 6 = ok
+
+Result: A=6, B=5, C=4 (evenly spread)
+```
+
+### Scenario: Node failure (graceful handling)
+
+```
+Before:
+  3 nodes × 7 max pods = 21 pods running
+
+Node fails:
+  2 remaining nodes now have ~10-11 pods each
+  Rebalancer calculates: no capacity available (total capacity = 14, total pods = 21)
+  Result: NO evictions (nowhere to put them)
+
+New node joins:
+  Total capacity restored to 21
+  Rebalancer evicts excess pods to new node
+```
 
 ## Installation
 
